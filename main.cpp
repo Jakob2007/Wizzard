@@ -30,13 +30,14 @@ average calls per run:
 1304
 
 
-- previous find valid cards was faulty, updated values:
+- previous find_valid_cards was faulty, updated values:
 average time per run (ms):
-19
+27
 average time per 1.000 calls (ms):
-46
+26
 average calls per run:
-418
+1062
+
 */
 
 void info(const string &text="") { cout << "\x1b[36m" << text << "\x1b[0m\n"; }
@@ -164,8 +165,8 @@ struct Hand {
 		m_cards_in_game_count++;
 	}
 
-	// returns an array of indecies of the cards that are resonalbe to play
-	vector<size_t> get_resonable_cards(card_t trick_color, card_t current_winning_card) const {
+	// returns an array of indecies of the cards that are reasonalbe to play
+	vector<size_t> get_reasonable_cards(card_t trick_color, card_t current_winning_card) const {
 		bool has_trick_color = false;
 		if (trick_color != Card::COLOR_NONE && trick_color != Card::COLOR_UNSET) {
 			for (size_t i=0; i<m_cards_in_game_count; i++) {
@@ -443,9 +444,9 @@ struct Round {
 			return game;
 		}
 		card_t current_winning_card = game.get_card_by_player(game.get_winner());
-		vector<size_t> card_indecies = p.get_resonable_cards(game.get_leading_color(), current_winning_card);
+		vector<size_t> card_indecies = p.get_reasonable_cards(game.get_leading_color(), current_winning_card);
 
-		int call_count = 0;
+		int call_count = 0; // used for profiling
 		Trick_cycle dummy = Trick_cycle::bad_dummy(m_player_count); // -> empty; will be replaced
 		Trick_cycle& best_trick = dummy;
 
@@ -458,6 +459,8 @@ struct Round {
 			card_t card = p.m_cards_arr[card_index];
 
 			Trick_cycle updated_game = game; // copy
+			// TODO: strip history
+			// TODO: do play unplay logic
 			updated_game.play_and_evaluate(card, m_trump_color);
 
 			p.play_card(card_index);
@@ -501,7 +504,7 @@ struct Round {
 				cout << Card::get_colored_name(player.m_cards_arr[i]);
 			}
 			cout << "\x1b[0m\n";
-			vector<size_t> indecies = player.get_resonable_cards(Card::RED, 0);
+			vector<size_t> indecies = player.get_reasonable_cards(Card::RED, 0);
 			for (auto i : indecies) {
 				cout << Card::get_colored_name(player.m_cards_arr[i]) << ", ";
 			}
@@ -568,7 +571,7 @@ struct Game {
 	Game(int player_count) {
 		test(0);
 		Round round(3, 4);
-		round.run(0);
+		// round.run(0);
 	}
 };
 
