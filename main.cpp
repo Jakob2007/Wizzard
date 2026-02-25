@@ -40,8 +40,8 @@ average calls per run:
 
 */
 
-void info(const string &text="") { cout << "\x1b[36m" << text << "\x1b[0m\n"; }
-void debug(const string &text) { cout << text << "\n"; }
+void info(const string &text="", bool no_end=false) { cout << "\x1b[36m" << text << "\x1b[0m" << (no_end ? "" : "\n"); }
+void debug(const string &text) { cout << text << std::endl; }
 static thread_local mt19937_64 random_seed{ std::random_device{}() };
 
 namespace Card {
@@ -96,6 +96,12 @@ namespace Card {
 		return string(color_display_prefix[i]) + color_names[i] + "\x1b[0m";
 	}
 
+	inline size_t get_card_index(card_t c) {
+		if (c == FOOL) return 0;
+		if (c == WIZZARD) return MAX_VALUE * 4 + 1;
+		return get_index_from_color(get_color(c)) * MAX_VALUE + get_value(c);
+	}
+
 	int get_eval_value(card_t c, card_t trick_color, card_t trump_color) {
 		card_t color = get_color(c);
 		card_t value = get_value(c);
@@ -137,6 +143,9 @@ struct Hand {
 	int m_cards_in_game_count;
 	int m_player_count;
 	card_t m_trump_color;
+	// using uint64_t would be more efficient but due to marginal use improvement should be neglectable
+	static constexpr size_t PROFILE_SIZE = Card::MAX_VALUE * 4 + 2; // 13*4 for normal cards; +2 for magic cards
+	using profile_t = std::array<bool, Hand::PROFILE_SIZE>;
 	
 	Hand() = default;
 	Hand(int id, int player_count, card_t trump_color, int starting_card_count) : m_id(id), m_player_count(player_count), m_trump_color(trump_color) {
@@ -147,6 +156,12 @@ struct Hand {
 	inline string get_name() const { return "Player" + to_string(m_id); }
 
 	inline bool is_done() {return m_cards_in_game_count == 0;}
+
+	profile_t get_profile() {
+		profile_t p = {false};
+		for (auto c : m_cards_arr) p[Card::get_card_index(c)] = true;
+		return p;
+	}
 
 	void play_card(size_t index) {
 		assert(index < m_cards_in_game_count && "tried to play card that is not in game");
@@ -399,14 +414,35 @@ struct Trick_cycle
 
 struct Round {
 	size_t m_player_count;
+	size_t m_card_count;
 	card_t m_trump_card;
 	card_t m_trump_color;
 	vector<Hand> m_player_hands_arr;
 	int trick_count = 0;
+	const size_t MAX_CARD_COUNT = 13*4 + 4*2; // 13 per color * 4 color + 4 Fools + 4 Wizzards
 
-	Round(int player_count, int card_count, bool stay_silent=false) : m_player_count(player_count) {
+	Round(int player_count, int card_count) : m_player_count(player_count), m_card_count(card_count) {full();}
+
+	void display() {
+		info(string("The Trump card is ") + Card::get_colored_name(m_trump_card));
+		info(string("The Trump color therefore is ") + (Card::is_magic(m_trump_card) ? string("not relevant") : Card::get_colored_color(m_trump_color)));
+
+		for (auto& player : m_player_hands_arr) {
+			info();
+			info(string("~~~~~~ ") + player.get_name() + " ~~~~~~");
+			info();
+			info("Hand: ", true);
+			for (size_t i = 0; i < player.m_cards_arr.size(); ++i) {
+				if (i) info(", ", true);;
+				cout << Card::get_colored_name(player.m_cards_arr[i]);
+			}
+			info();
+		}
+	}
+
+	// needs full random hand, one hand given, one hand given + colors out
+	void full() {
 		// make deck
-		const size_t MAX_CARD_COUNT = 13*4 + 4*2; // 13 per color * 4 color + 4 Fools + 4 Wizzards
 		card_t cards[MAX_CARD_COUNT];
 		for (size_t i = 0; i < 4; i++) { // for each color
 			for (size_t j = 0; j < Card::MAX_VALUE; j++) { // for each value
@@ -425,14 +461,12 @@ struct Round {
 		m_trump_card = cards[0];
 		m_trump_color = Card::get_color(m_trump_card); // * for Magic card trump_color is Card::COLOR_NONE
 		// TODO: there is a special case for fool where the first player gets to pick the trump color (or that there is none)
-		if (!stay_silent) info(string("The Trump card is ") + Card::get_colored_name(m_trump_card));
-		if (!stay_silent) info(string("The Trump color therefore is ") + (Card::is_magic(m_trump_card) ? string("not relevant") : Card::get_colored_color(m_trump_color)));
-
+		
 		// create players and distribute cards
-		for (int i = 0; i < (int)player_count; i++) {
-			Hand hand(i, player_count, m_trump_color, card_count);
-			for (int j = 0; j < card_count; j++) {
-				hand.m_cards_arr.push_back(cards[1 + card_count*i + j]); // add one to not reuse trump
+		for (int i = 0; i < (int)m_player_count; i++) {
+			Hand hand(i, m_player_count, m_trump_color, m_card_count);
+			for (int j = 0; j < m_card_count; j++) {
+				hand.m_cards_arr.push_back(cards[1 + m_card_count*i + j]); // add one to not reuse trump
 			}
 			m_player_hands_arr.push_back(hand);
 		}
@@ -494,22 +528,7 @@ struct Round {
 	void eval_timed(float unpredictability_accountability) {
 		info(" --------------- Test round --------------- ");
 
-		for (auto& player : m_player_hands_arr) {
-			info("");
-			info(string("~~~~~~ ") + player.get_name() + " ~~~~~~");
-			info("");
-			cout << "\x1b[36m" << "Hand: ";
-			for (size_t i = 0; i < player.m_cards_arr.size(); ++i) {
-				if (i) cout << ", ";
-				cout << Card::get_colored_name(player.m_cards_arr[i]);
-			}
-			cout << "\x1b[0m\n";
-			vector<size_t> indecies = player.get_reasonable_cards(Card::RED, 0);
-			for (auto i : indecies) {
-				cout << Card::get_colored_name(player.m_cards_arr[i]) << ", ";
-			}
-			cout << "\x1b[0m\n";
-		}
+		display();
 
 		info();
 		info(to_string(unpredictability_accountability));
@@ -524,7 +543,7 @@ struct Round {
 		for (const auto& x : result.m_score_distribution) std::cout << x << ' ';
 		cout << std::endl;
 
-		info("expected tricks:");
+		info("expected tricks:", true);
 		for (const auto& x : result.m_score) std::cout << x << ' ';
 		cout << std::endl;
 		for (const auto& x : result.history) {
@@ -550,12 +569,13 @@ struct Game {
 		auto start = std::chrono::high_resolution_clock::now();
 		for (size_t i=0; i<runs; i++) {
 			std::cout << "\rCycle: " << i << std::flush;
-			Round r(player_count, 4, true);
+			Round r(player_count, 4);
 			
 			Trick_cycle trick(starting_player, player_count);
 			Trick_cycle result = r.minimax_round(trick, r.m_player_hands_arr, 0.0f);
 			call_cout+= result.call_count;
 		}
+		std::cout << "\r" << std::flush;
 		auto end = std::chrono::high_resolution_clock::now();
 		auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
 
@@ -569,9 +589,9 @@ struct Game {
 	}
 
 	Game(int player_count) {
-		test(0);
+		// test(0);
 		Round round(3, 4);
-		// round.run(0);
+		round.run(0);
 	}
 };
 
