@@ -38,7 +38,16 @@ average time per 1.000 calls (ms):
 average calls per run:
 1062
 
+- target hitting; why so bad??
+average time per run (ms):
+89
+average time per 1.000 calls (ms):
+40
+average calls per run:
+2205
+
 */
+
 
 void info(const string &text="", bool no_end=false) { cout << "\x1b[36m" << text << "\x1b[0m" << (no_end ? "" : "\n"); }
 void debug(const string &text) { cout << text << std::endl; }
@@ -229,7 +238,7 @@ struct Hand {
 			if (current_winning_card == Card::EMPTY) {
 				if (card == Card::FOOL) reasonable_cards[LOSING_FOOL] = card_index; // losing fool
 				if (card == Card::WIZZARD) reasonable_cards[WINNING_HIGH] = card_index; // winning high -> wizzard
-				if (Card::is_magic(card)) continue;
+				if (Card::is_magic(card)) continue; // dont allow further logic to happen if magic
 
 				size_t index = Card::get_index_from_color(color);
 
@@ -263,6 +272,9 @@ struct Hand {
 						if (card_from_category(index) == Card::EMPTY ||
 							!is_better(card, card_from_category(index)))
 							reasonable_cards[index] = card_index; // losing low color
+						if (card_from_category(index + 4) == Card::EMPTY ||
+							is_better(card, card_from_category(index + 4)))
+							reasonable_cards[index + 4] = card_index; // losing high color -> only for intentionally loosing
 					}
 				}
 			}
@@ -420,6 +432,7 @@ struct Round {
 	vector<Hand> m_player_hands_arr;
 	int trick_count = 0;
 	const size_t MAX_CARD_COUNT = 13*4 + 4*2; // 13 per color * 4 color + 4 Fools + 4 Wizzards
+	float unpredictability_accountability = 0;
 
 	Round(int player_count, int card_count) : m_player_count(player_count), m_card_count(card_count) {full();}
 
@@ -472,7 +485,7 @@ struct Round {
 		}
 	}
 
-	Trick_cycle minimax_round(Trick_cycle& game, vector<Hand>& player_arr, float unpredictability_accountability) {
+	Trick_cycle minimax_round(Trick_cycle& game, vector<Hand>& player_arr, const vector<int>& target) {
 		Hand& p = player_arr[game.get_current_player()];
 		if (p.is_done()) {
 			return game;
@@ -483,6 +496,7 @@ struct Round {
 		int call_count = 0; // used for profiling
 		Trick_cycle dummy = Trick_cycle::bad_dummy(m_player_count); // -> empty; will be replaced
 		Trick_cycle& best_trick = dummy;
+		float best_score = INFINITY; // score gets minimized
 
 		int possible_scenarios = 0;
 		vector<float> new_score_distribution;
@@ -498,22 +512,29 @@ struct Round {
 			updated_game.play_and_evaluate(card, m_trump_color);
 
 			p.play_card(card_index);
-			
-			Trick_cycle eval = minimax_round(updated_game, player_arr, unpredictability_accountability);
+
+			Trick_cycle eval = minimax_round(updated_game, player_arr, target);
 
 			p.unplay_last_card_to(card_index);
 
 			call_count+= eval.call_count;
 
-			if (eval.m_score_distribution[p.m_id] > best_trick.m_score_distribution[p.m_id]) {
+			float score = std::abs(eval.m_score_distribution[p.m_id] - (float)target[p.m_id]);
+			if (score < best_score) {
+				// needs second if to fire aswell for proper functionality
 				best_trick = eval;
+				best_score = score;
 				new_score_distribution.assign(m_player_count, 0.0f);
 				possible_scenarios = 0;
 			}
-			if (eval.m_score_distribution[p.m_id] + unpredictability_accountability >= best_trick.m_score_distribution[p.m_id]) {
+			if (score - unpredictability_accountability <= best_score) {
 				for (size_t i = 0; i < m_player_count; i++) new_score_distribution[i]+= eval.m_score_distribution[i];
 				possible_scenarios++;
 			}
+			// break for perfect score -> no further investigation needed
+			// potentially messes with probability for other players
+			// only benefits if perfect score is possible
+			// if (score == 0) break;
 		}
 		assert(!best_trick.m_dummy && "dummy trick was never replaced");
 
@@ -526,6 +547,8 @@ struct Round {
 	}
 
 	void eval_timed(float unpredictability_accountability) {
+		vector<int> target(m_player_count, m_card_count);
+
 		info(" --------------- Test round --------------- ");
 
 		display();
@@ -534,7 +557,7 @@ struct Round {
 		info(to_string(unpredictability_accountability));
 		auto start = std::chrono::high_resolution_clock::now();
 		Trick_cycle trick(0, m_player_count);
-		Trick_cycle result = minimax_round(trick, m_player_hands_arr, unpredictability_accountability);
+		Trick_cycle result = minimax_round(trick, m_player_hands_arr, target);
 		auto end = std::chrono::high_resolution_clock::now();
 		auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
 		info(string("Execution time: ") + to_string(duration.count()) + "ms");
@@ -543,7 +566,7 @@ struct Round {
 		for (const auto& x : result.m_score_distribution) std::cout << x << ' ';
 		cout << std::endl;
 
-		info("expected tricks:", true);
+		info("expected tricks: ", true);
 		for (const auto& x : result.m_score) std::cout << x << ' ';
 		cout << std::endl;
 		for (const auto& x : result.history) {
@@ -565,14 +588,16 @@ struct Game {
 	void test(int starting_player) {
 		const int runs = 100;
 		const int player_count = 3;
+		const int card_count = 4;
 		int call_cout = 0;
+		vector<int> target(player_count, card_count);
 		auto start = std::chrono::high_resolution_clock::now();
 		for (size_t i=0; i<runs; i++) {
 			std::cout << "\rCycle: " << i << std::flush;
-			Round r(player_count, 4);
+			Round r(player_count, card_count);
 			
 			Trick_cycle trick(starting_player, player_count);
-			Trick_cycle result = r.minimax_round(trick, r.m_player_hands_arr, 0.0f);
+			Trick_cycle result = r.minimax_round(trick, r.m_player_hands_arr, target);
 			call_cout+= result.call_count;
 		}
 		std::cout << "\r" << std::flush;
@@ -589,7 +614,7 @@ struct Game {
 	}
 
 	Game(int player_count) {
-		// test(0);
+		test(0);
 		Round round(3, 4);
 		round.run(0);
 	}
