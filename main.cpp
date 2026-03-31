@@ -38,16 +38,43 @@ average time per 1.000 calls (ms):
 average calls per run:
 1062
 
-- target hitting; why so bad??
+- target hitting;
 average time per run (ms):
 89
 average time per 1.000 calls (ms):
 40
 average calls per run:
-2205
+2526
+- theoratical best reached pruning
+average time per run (ms):
+86
+average time per 1.000 calls (ms):
+41
+average calls per run:
+2045
 
 */
 
+// TODO: pruning logic:
+// erste idee:
+// wenn karte a den aktuellen stich gewinnt und karte b nicht und bei karte b der theoretische beste score unter dem bereits bestimmten score von a liegt, kann b ohne weitere berechnung geprunet werden
+// einschränkung:
+// doch nicht so gut: dieser fall kann nur eintreten wenn a maximal einen stich schlechter als das theoretische maximum ist und b den stich nicht macht -> vereinfacht berechnung
+
+// zusammengefasst:
+// -> wenn eine karte gefunden wurde, die den nächsten stich gewinnt und einen score von maximal einem Stich winiger als der optimalwert erreicht kann dieser score nicht mehr überboten werden von einer Karte die den nächsten Stich nicht gewinnt. Daher kann direkt geprüft werden ob der nächste stich nicht gewonnen wird. Bei letzter Karte: gewinnt sie den stich? oder variable wird bei recursive calls mitgegeben: xy muss gewinnen/nicht gewinnen. Wenn diese bedingung nicht erfüllt ist kann direkt geprunt werden. 
+
+// implementierung:
+// die aktuelle geprüfte karte gewinnt (bei stiche bisher kleiner target) / verliert (bei stiche bisher größer/gleich target) den stich (kann in history geprüft werden), und ist der erwartungs score ist > optimum-1, dann: flag wird gesetzt. Wenn flag gesetzt variablie wird bei jeder weiteren karte down gepasst: aktueller spieler muss gewinnen/verlieren. Wenn der stich evaluiert wird und die bedingung nicht erfüllt ist wird nicht tiefer berechnet + karte wird nicht weiter beachtet
+// gewinn: Wenn früh eine gute karte gefunden wird werden karten die nicht direkt einen vorteil haben geprunt
+
+// erweiterung: move sorting könnte dann effektiv sein
+
+// ? muss theoratical best score aus m_score oder m_score_destribution errechnet werden?
+
+
+// less flexiblie but allows stack alocation
+#define PLAYER_COUNT 3
 
 void info(const string &text="", bool no_end=false) { cout << "\x1b[36m" << text << "\x1b[0m" << (no_end ? "" : "\n"); }
 void debug(const string &text) { cout << text << std::endl; }
@@ -146,6 +173,31 @@ namespace Card {
 };
 using Card::card_t;
 
+namespace Deck {
+	constexpr size_t MAX_CARD_COUNT = 13*4 + 4*2; // 13 per color * 4 color + 4 Fools + 4 Wizzards
+	using deck_t = array<card_t, MAX_CARD_COUNT>;
+	deck_t make() {
+		// make deck
+		deck_t cards;
+		for (size_t i = 0; i < 4; i++) { // for each color
+			for (size_t j = 0; j < Card::MAX_VALUE; j++) { // for each value
+				cards[i*Card::MAX_VALUE+j] = Card::from_color_and_value(Card::get_color_from_index(i), j+1);
+			}
+		}
+		for (int i = 0; i < 4; ++i) { 
+			cards[4*Card::MAX_VALUE + i] = Card::FOOL;
+			cards[4*Card::MAX_VALUE + 4 + i] = Card::WIZZARD;
+		}
+		return cards;
+	}
+
+	inline deck_t shuffeld() {
+		auto cards = make();
+		shuffle(cards.begin(), cards.end(), random_seed);
+		return cards;
+	}
+}
+
 struct Hand {
 	int m_id;
 	std::vector<card_t> m_cards_arr;
@@ -156,6 +208,7 @@ struct Hand {
 	static constexpr size_t PROFILE_SIZE = Card::MAX_VALUE * 4 + 2; // 13*4 for normal cards; +2 for magic cards
 	using profile_t = std::array<bool, Hand::PROFILE_SIZE>;
 	
+	// TODO: add add function for safer handeling -> checking if enough cards have been added?
 	Hand() = default;
 	Hand(int id, int player_count, card_t trump_color, int starting_card_count) : m_id(id), m_player_count(player_count), m_trump_color(trump_color) {
 		m_cards_arr.reserve(starting_card_count);
@@ -398,13 +451,14 @@ struct Trick_cycle
 		return m_trick.m_color;
 	}
 
-	void play_and_evaluate(card_t card, card_t trump_color) {
+	char play_and_evaluate(card_t card, card_t trump_color) {
 		assert(!m_dummy && "dummy can not be accessed");
 
+		int player_index = get_current_player();
 		m_trick.play(card, trump_color);
 
-		if (!m_trick.is_done()) return; // trick ongoing
-		
+		if (!m_trick.is_done()) return 'c'; // trick ongoing
+
 		int winner = get_winner();
 
 		// update score
@@ -420,6 +474,8 @@ struct Trick_cycle
 
 		// reset trick
 		m_trick.clear(winner);
+
+		return (winner == player_index) ? 'w' : 'l';
 	}
 };
 
@@ -502,6 +558,15 @@ struct Round {
 		vector<float> new_score_distribution;
 		new_score_distribution.assign(m_player_count, 0.0f);
 
+		const int current_player_target_score = target[p.m_id];
+		const int cards_in_game = p.m_cards_in_game_count;
+		const int current_score = game.m_score[p.m_id];
+		int theoratical_best_score = 0;
+		if (current_score + cards_in_game < current_player_target_score) theoratical_best_score = current_player_target_score - (current_score + cards_in_game); // undershoot
+		if (current_score > current_player_target_score) theoratical_best_score = current_score - current_player_target_score; // overshoot
+
+		bool one_less_perfect_win_found = false;
+
 		for (size_t i = 0; i < card_indecies.size(); i++) {
 			size_t card_index = card_indecies[i];
 			card_t card = p.m_cards_arr[card_index];
@@ -509,7 +574,7 @@ struct Round {
 			Trick_cycle updated_game = game; // copy
 			// TODO: strip history
 			// TODO: do play unplay logic
-			updated_game.play_and_evaluate(card, m_trump_color);
+			char outcome = updated_game.play_and_evaluate(card, m_trump_color);
 
 			p.play_card(card_index);
 
@@ -519,22 +584,22 @@ struct Round {
 
 			call_count+= eval.call_count;
 
-			float score = std::abs(eval.m_score_distribution[p.m_id] - (float)target[p.m_id]);
+			float score = std::abs(eval.m_score_distribution[p.m_id] - (float)current_player_target_score);
 			if (score < best_score) {
-				// needs second if to fire aswell for proper functionality
+				// * needs second if to fire aswell for proper functionality
 				best_trick = eval;
 				best_score = score;
 				new_score_distribution.assign(m_player_count, 0.0f);
 				possible_scenarios = 0;
 			}
-			if (score - unpredictability_accountability <= best_score) {
+			if (score <= best_score) {
 				for (size_t i = 0; i < m_player_count; i++) new_score_distribution[i]+= eval.m_score_distribution[i];
 				possible_scenarios++;
 			}
 			// break for perfect score -> no further investigation needed
 			// potentially messes with probability for other players
 			// only benefits if perfect score is possible
-			// if (score == 0) break;
+			if (score - theoratical_best_score <= .1) break;
 		}
 		assert(!best_trick.m_dummy && "dummy trick was never replaced");
 
@@ -583,10 +648,63 @@ struct Round {
 };
 
 struct Game {
-	vector<int> score;
+	// own player id always 0
+	int card_count;
+	Hand own_hand;
+	array<array<bool, 4>, PLAYER_COUNT> possible_colors_in;
+
+	array<Hand, PLAYER_COUNT-1> get_random_constrained_hand(int card_count, card_t trump_card) { // get constrained based random assignement of cards; own hand -> id (index) 0
+		/*
+		Alle karten werden geshuffelt. Es wird über sie geloopt. Der erste spieler nimmt die erste karte, die seine bedinungen erüllen, die nachfolgenden spieler wiederholen das. Wenn die liste komplett durchgegangen wurde, wird wieder von vorne angefangen bis alle hände gefüllt sind. dadurch sollte kein bias entstehen das ein bestimmter spieler hauptsächlich die rest karten eines anderes bekommt.
+		Eine naive aufteilung verursacht Bias sobald ein Spieler eine Farbe nicht mehr auf der Hand haben kann (zuvor nicht bedient) -> nachfolgender Spieler nimmt überproportional viele Karten dieser Farbe auf.
+		*/
+		assert(own_hand.m_id != 0);
+		
+		auto deck = Deck::shuffeld();
+		array<bool, Deck::MAX_CARD_COUNT> claimed{}; // -> init to false
+
+		// mark own hand as claimed
+		for (auto card : own_hand.m_cards_arr) {
+			for (size_t i = 0; i < Deck::MAX_CARD_COUNT; i++) {
+				if (deck[i] == card) claimed[i] = true;
+			}
+		}
+
+		// mark trump card as claimed
+		for (size_t i = 0; i < Deck::MAX_CARD_COUNT; i++) {
+			if (deck[i] == trump_card) claimed[i] = true;
+		}
+
+		// init hands
+		array<Hand, PLAYER_COUNT> hands;
+		hands[0] = own_hand;
+		card_t trump_color = Card::get_color(trump_card);
+		for (size_t i=1; i<PLAYER_COUNT; i++) {
+			hands[i] = Hand(i, PLAYER_COUNT, trump_color, card_count);
+		}
+
+		// get hands
+		auto is_valid = [&hands, this](int id, card_t card) -> bool {
+			return possible_colors_in[id][Card::get_index_from_color(Card::get_color(card))];
+		};
+
+		size_t i = 0;
+		for (size_t _ = 0; _ < card_count; _++)
+		{
+			// TODO: shuffle players for more uniform spread
+			for (size_t p = 1; p < PLAYER_COUNT; p++)
+			{
+				while (!is_valid(p, deck[i])) i++;
+
+				hands[p].m_cards_arr.push_back(deck[i]);
+				claimed[i] = true;
+				i++;
+			}
+		}
+	}
 
 	void test(int starting_player) {
-		const int runs = 100;
+		const int runs = 1000;
 		const int player_count = 3;
 		const int card_count = 4;
 		int call_cout = 0;
