@@ -45,7 +45,7 @@ average time per 1.000 calls (ms):
 40
 average calls per run:
 2526
-- theoratical best reached pruning
+- theoratical-best-reached pruning
 average time per run (ms):
 86
 average time per 1.000 calls (ms):
@@ -72,9 +72,15 @@ average calls per run:
 
 // ? muss theoratical best score aus m_score oder m_score_destribution errechnet werden?
 
+// TODO:
+// Game und virtual Round zu Round zusammenfügen -> viel überlappung, nur logic verschieden
+// eine tatsächliche Game class schaffen die Round übergreifend agiert
 
-// less flexiblie but allows stack alocation
-#define PLAYER_COUNT 3
+// ! letzte änderung
+// evaluate in arbeit
+// (history muss überarbeitet werden)
+
+#define PLAYER_COUNT 3 // less flexiblie but allows stack alocation
 
 void info(const string &text="", bool no_end=false) { cout << "\x1b[36m" << text << "\x1b[0m" << (no_end ? "" : "\n"); }
 void debug(const string &text) { cout << text << std::endl; }
@@ -93,8 +99,8 @@ namespace Card {
 	const char* color_names[5] = {"Red","Green","Blue","Yellow","Magic"};
 	const char* color_display_prefix[5] = {"\x1b[31m", "\x1b[32m", "\x1b[34m", "\x1b[33m", "\x1b[35m"};
 	constexpr int MAX_VALUE = 13;
-	constexpr card_t FOOL = MAGIC | 0;
-	constexpr card_t WIZZARD = MAGIC | (MAX_VALUE*2+1);
+	constexpr card_t FOOL = MAGIC | 0; // value = 0 -> lower than all other cards
+	constexpr card_t WIZZARD = MAGIC | (MAX_VALUE*2+1); // value = MAX_VALUE*2+1 -> higher than even trump cards
 
 	static constexpr card_t COLOR_NONE  = MAGIC; // no trick/trumpcolor means card was a wizzard (fool) -> color will match (be Magic)
 	static constexpr card_t COLOR_UNSET = 0b10000001; // trick color not yet determend -> magic + 1
@@ -217,7 +223,9 @@ struct Hand {
 
 	inline string get_name() const { return "Player" + to_string(m_id); }
 
-	inline bool is_done() {return m_cards_in_game_count == 0;}
+	inline bool is_done() const { return m_cards_in_game_count == 0; }
+
+	inline card_t at(size_t index) const { return m_cards_arr.at(index); }
 
 	profile_t get_profile() {
 		profile_t p = {false};
@@ -225,19 +233,31 @@ struct Hand {
 		return p;
 	}
 
+	void display() {
+		info();
+		info(string("~~~~~~ ") + get_name() + " ~~~~~~");
+		info();
+		info("Hand: ", true);
+		for (size_t i = 0; i < m_cards_arr.size(); ++i) {
+			if (i) info(", ", true);;
+			cout << Card::get_colored_name(at(i));
+		}
+		info();
+	}
+
 	void play_card(size_t index) {
 		assert(index < m_cards_in_game_count && "tried to play card that is not in game");
 		m_cards_in_game_count--;
 		if (index == m_cards_in_game_count) return; // no need to swap since index is already the last card
-		card_t played_card = m_cards_arr[index];
-		m_cards_arr[index] = m_cards_arr[m_cards_in_game_count];
+		card_t played_card = at(index);
+		m_cards_arr[index] = at(m_cards_in_game_count);
 		m_cards_arr[m_cards_in_game_count] = played_card;
 	}
 	
 	void unplay_last_card_to(size_t index) {
 		assert(m_cards_in_game_count <= m_cards_arr.size() && "unplay failed");
-		card_t played_card = m_cards_arr[m_cards_in_game_count];
-		m_cards_arr[m_cards_in_game_count] = m_cards_arr[index];
+		card_t played_card = at(m_cards_in_game_count);
+		m_cards_arr[m_cards_in_game_count] = at(index);
 		m_cards_arr[index] = played_card;
 		m_cards_in_game_count++;
 	}
@@ -247,7 +267,7 @@ struct Hand {
 		bool has_trick_color = false;
 		if (trick_color != Card::COLOR_NONE && trick_color != Card::COLOR_UNSET) {
 			for (size_t i=0; i<m_cards_in_game_count; i++) {
-				if (Card::get_color(m_cards_arr[i]) == trick_color) {has_trick_color = true; break;}
+				if (Card::get_color(at(i)) == trick_color) {has_trick_color = true; break;}
 			}
 		}
 
@@ -282,7 +302,7 @@ struct Hand {
 		};
 
 		for (size_t card_index=0; card_index<m_cards_in_game_count; card_index++) {
-			card_t card = m_cards_arr[card_index];
+			card_t card = at(card_index);
 			card_t color = Card::get_color(card);
 			// if trick color can be followed all other cards (except magic) are discarded
 			if (has_trick_color && !Card::is_magic(card) && color != trick_color) {continue;}
@@ -351,14 +371,13 @@ struct Hand {
 };
 
 struct Trick {
-	vector<card_t> m_cards;
+	array<card_t, PLAYER_COUNT> m_cards{};
 	card_t m_color;
-	int m_player_count;
 	int m_starting_player;
 	int m_current_player;
 	size_t m_current_winning_player;
 
-	Trick() {}
+	Trick() {};
 
 	void clear(int starting_player) {
 		m_color = Card::COLOR_UNSET;
@@ -367,8 +386,7 @@ struct Trick {
 		m_current_winning_player = starting_player;
 	}
 
-	Trick(int starting_player, int player_count) : m_player_count(player_count) {
-		m_cards.assign(player_count, 0);
+	Trick(int starting_player) {
 		clear(starting_player);
 	}
 
@@ -401,34 +419,37 @@ struct Trick {
 		}
 
 		// increase current player
-		m_current_player = (m_current_player+1) % m_player_count;
+		m_current_player = (m_current_player+1) % PLAYER_COUNT;
 	}
 };
 
-struct Trick_cycle
-{
-	vector<int> m_score;
-	vector<vector<card_t>> history;
-	vector<float> m_score_distribution;
+struct Branch {
+	static constexpr size_t winner_index = 0;
+	static constexpr size_t color_index = 1;
+	static constexpr size_t first_card_index = 2;
+	array<int, PLAYER_COUNT> m_score;
+	vector<array<card_t, PLAYER_COUNT + Branch::first_card_index>> history;
+	array<float, PLAYER_COUNT> m_score_distribution;
+	// TODO: implement
 	int variance = 0;
 	int call_count = 1;
 	bool m_dummy = false;
 
 	Trick m_trick;
 
-	Trick_cycle() {}
+	Branch() {m_dummy = true;}
 	
-	static Trick_cycle bad_dummy(int player_count) {
-		Trick_cycle t;
+	static Branch bad_dummy() {
+		Branch t;
 		t.m_dummy = true; 
-		t.m_score.assign(player_count, -1);
-		t.m_score_distribution.assign(player_count, -1);
+		t.m_score.fill(-1);
+		t.m_score_distribution.fill(-1);
 		return t;
 	}
 
-	Trick_cycle(int starting_player, int player_count) : m_trick(starting_player, player_count) {
-		m_score.assign(player_count, 0);
-		m_score_distribution.assign(player_count, 0.0f);
+	Branch(int starting_player) : m_trick(starting_player) {
+		m_score.fill(0);
+		m_score_distribution.fill(0.0f);
 	}
 
 	inline int get_current_player() {
@@ -468,9 +489,9 @@ struct Trick_cycle
 		// expand history
 		history.emplace_back();
 		auto& h = history.back();
-		h.push_back(Card::from_color_and_value(Card::RED, winner)); // winner
-		h.push_back(Card::from_color_and_value(m_trick.m_color, 0)); // trick color
-		h.insert(h.end(), m_trick.m_cards.begin(), m_trick.m_cards.end());
+		h[winner_index] = Card::from_color_and_value(Card::RED, winner); // winner
+		h[color_index] =  Card::from_color_and_value(m_trick.m_color, 0); // trick color
+		for (size_t i=0; i<PLAYER_COUNT; i++) h[first_card_index+i] = m_trick.m_cards[i];
 
 		// reset trick
 		m_trick.clear(winner);
@@ -479,88 +500,80 @@ struct Trick_cycle
 	}
 };
 
-
-struct Round {
-	size_t m_player_count;
+struct Round_Architecture {
+	// size_t m_player_count;
 	size_t m_card_count;
 	card_t m_trump_card;
 	card_t m_trump_color;
-	vector<Hand> m_player_hands_arr;
-	int trick_count = 0;
-	const size_t MAX_CARD_COUNT = 13*4 + 4*2; // 13 per color * 4 color + 4 Fools + 4 Wizzards
-	float unpredictability_accountability = 0;
+	array<Hand, PLAYER_COUNT> m_player_hands_arr;
 
-	Round(int player_count, int card_count) : m_player_count(player_count), m_card_count(card_count) {full();}
+	Round_Architecture(int card_count=1) : m_card_count(card_count) {
+
+	}
 
 	void display() {
-		info(string("The Trump card is ") + Card::get_colored_name(m_trump_card));
+		info(string("The current Trump card is ") + Card::get_colored_name(m_trump_card));
 		info(string("The Trump color therefore is ") + (Card::is_magic(m_trump_card) ? string("not relevant") : Card::get_colored_color(m_trump_color)));
 
 		for (auto& player : m_player_hands_arr) {
-			info();
-			info(string("~~~~~~ ") + player.get_name() + " ~~~~~~");
-			info();
-			info("Hand: ", true);
-			for (size_t i = 0; i < player.m_cards_arr.size(); ++i) {
-				if (i) info(", ", true);;
-				cout << Card::get_colored_name(player.m_cards_arr[i]);
-			}
-			info();
+			player.display();
 		}
 	}
+};
 
-	// needs full random hand, one hand given, one hand given + colors out
-	void full() {
-		// make deck
-		card_t cards[MAX_CARD_COUNT];
-		for (size_t i = 0; i < 4; i++) { // for each color
-			for (size_t j = 0; j < Card::MAX_VALUE; j++) { // for each value
-				cards[i*Card::MAX_VALUE+j] = Card::from_color_and_value(Card::get_color_from_index(i), j+1);
-			}
-		}
-		for (int i = 0; i < 4; ++i) { 
-			cards[4*Card::MAX_VALUE + i] = Card::FOOL;
-			cards[4*Card::MAX_VALUE + 4 + i] = Card::WIZZARD;
-		}
+struct Game_Round : Round_Architecture {
+	array<char, PLAYER_COUNT> m_player_type;
+	Trick game_trick;
 
-		// shuffle deck
-		shuffle(cards, cards + MAX_CARD_COUNT, random_seed);
+	void distribute_cards() { // generates all hands randomly
+		auto deck = Deck::shuffeld();
 
 		// pick trump card
-		m_trump_card = cards[0];
+		m_trump_card = deck[0];
 		m_trump_color = Card::get_color(m_trump_card); // * for Magic card trump_color is Card::COLOR_NONE
 		// TODO: there is a special case for fool where the first player gets to pick the trump color (or that there is none)
-		
+
 		// create players and distribute cards
-		for (int i = 0; i < (int)m_player_count; i++) {
-			Hand hand(i, m_player_count, m_trump_color, m_card_count);
+		for (int i = 0; i < PLAYER_COUNT; i++) {
+			Hand hand(i, PLAYER_COUNT, m_trump_color, m_card_count);
 			for (int j = 0; j < m_card_count; j++) {
-				hand.m_cards_arr.push_back(cards[1 + m_card_count*i + j]); // add one to not reuse trump
+				hand.m_cards_arr.push_back(deck[m_card_count*i + j]);
 			}
-			m_player_hands_arr.push_back(hand);
+			m_player_hands_arr[i] = hand;
 		}
 	}
 
-	Trick_cycle minimax_round(Trick_cycle& game, vector<Hand>& player_arr, const vector<int>& target) {
-		Hand& p = player_arr[game.get_current_player()];
+	Game_Round(int card_count) : Round_Architecture(card_count) {
+		game_trick = Trick(0);
+		distribute_cards();
+	}
+};
+
+struct Virtual_Round : Round_Architecture {
+	Virtual_Round(int card_count) : Round_Architecture(card_count) {
+
+	}
+
+	Branch minimax_round(Branch& branch, array<Hand, PLAYER_COUNT>& player_hands_arr, const array<int, PLAYER_COUNT>& target) {
+		Hand& p = player_hands_arr[branch.get_current_player()];
 		if (p.is_done()) {
-			return game;
+			return branch;
 		}
-		card_t current_winning_card = game.get_card_by_player(game.get_winner());
-		vector<size_t> card_indecies = p.get_reasonable_cards(game.get_leading_color(), current_winning_card);
+		card_t current_winning_card = branch.get_card_by_player(branch.get_winner());
+		vector<size_t> card_indecies = p.get_reasonable_cards(branch.get_leading_color(), current_winning_card);
 
 		int call_count = 0; // used for profiling
-		Trick_cycle dummy = Trick_cycle::bad_dummy(m_player_count); // -> empty; will be replaced
-		Trick_cycle& best_trick = dummy;
+		Branch dummy = Branch::bad_dummy(); // -> empty; will be replaced
+		Branch& best_trick = dummy;
 		float best_score = INFINITY; // score gets minimized
 
 		int possible_scenarios = 0;
-		vector<float> new_score_distribution;
-		new_score_distribution.assign(m_player_count, 0.0f);
+		array<float, PLAYER_COUNT> new_score_distribution;
+		new_score_distribution.fill(0.0f);
 
 		const int current_player_target_score = target[p.m_id];
 		const int cards_in_game = p.m_cards_in_game_count;
-		const int current_score = game.m_score[p.m_id];
+		const int current_score = branch.m_score[p.m_id];
 		int theoratical_best_score = 0;
 		if (current_score + cards_in_game < current_player_target_score) theoratical_best_score = current_player_target_score - (current_score + cards_in_game); // undershoot
 		if (current_score > current_player_target_score) theoratical_best_score = current_score - current_player_target_score; // overshoot
@@ -569,16 +582,16 @@ struct Round {
 
 		for (size_t i = 0; i < card_indecies.size(); i++) {
 			size_t card_index = card_indecies[i];
-			card_t card = p.m_cards_arr[card_index];
+			card_t card = p.at(card_index);
 
-			Trick_cycle updated_game = game; // copy
+			Branch updated_game = branch; // copy
 			// TODO: strip history
 			// TODO: do play unplay logic
 			char outcome = updated_game.play_and_evaluate(card, m_trump_color);
 
 			p.play_card(card_index);
 
-			Trick_cycle eval = minimax_round(updated_game, player_arr, target);
+			Branch eval = minimax_round(updated_game, player_hands_arr, target);
 
 			p.unplay_last_card_to(card_index);
 
@@ -589,11 +602,11 @@ struct Round {
 				// * needs second if to fire aswell for proper functionality
 				best_trick = eval;
 				best_score = score;
-				new_score_distribution.assign(m_player_count, 0.0f);
+				new_score_distribution.fill(0.0f);
 				possible_scenarios = 0;
 			}
 			if (score <= best_score) {
-				for (size_t i = 0; i < m_player_count; i++) new_score_distribution[i]+= eval.m_score_distribution[i];
+				for (size_t i = 0; i < PLAYER_COUNT; i++) new_score_distribution[i]+= eval.m_score_distribution[i];
 				possible_scenarios++;
 			}
 			// break for perfect score -> no further investigation needed
@@ -603,7 +616,7 @@ struct Round {
 		}
 		assert(!best_trick.m_dummy && "dummy trick was never replaced");
 
-		for (size_t i = 0; i < m_player_count; i++) new_score_distribution[i] = new_score_distribution[i] / (float)possible_scenarios;
+		for (size_t i = 0; i < PLAYER_COUNT; i++) new_score_distribution[i] = new_score_distribution[i] / (float)possible_scenarios;
 
 		best_trick.m_score_distribution = new_score_distribution;
 
@@ -611,18 +624,18 @@ struct Round {
 		return best_trick;
 	}
 
-	void eval_timed(float unpredictability_accountability) {
-		vector<int> target(m_player_count, m_card_count);
+	void eval_timed() {
+		array<int, PLAYER_COUNT> target;
+		target.fill(m_card_count);
 
 		info(" --------------- Test round --------------- ");
 
 		display();
 
 		info();
-		info(to_string(unpredictability_accountability));
 		auto start = std::chrono::high_resolution_clock::now();
-		Trick_cycle trick(0, m_player_count);
-		Trick_cycle result = minimax_round(trick, m_player_hands_arr, target);
+		Branch trick(0);
+		Branch result = minimax_round(trick, m_player_hands_arr, target);
 		auto end = std::chrono::high_resolution_clock::now();
 		auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
 		info(string("Execution time: ") + to_string(duration.count()) + "ms");
@@ -643,28 +656,44 @@ struct Round {
 	}
 
 	void run(int starting_player) {
-		eval_timed(0.0f);
+		eval_timed();
 	}
 };
 
-struct Game {
-	// own player id always 0
-	int card_count;
-	Hand own_hand;
+struct Agent {
+	int m_id;
+	Hand& m_this_hand;
+	Game_Round* m_root_round;
 	array<array<bool, 4>, PLAYER_COUNT> possible_colors_in;
 
-	array<Hand, PLAYER_COUNT-1> get_random_constrained_hand(int card_count, card_t trump_card) { // get constrained based random assignement of cards; own hand -> id (index) 0
+	Agent(Game_Round* round, int id) : m_root_round(round), m_id(id), m_this_hand(round->m_player_hands_arr[id]) {
+
+		// init colors in
+		for (auto& a : possible_colors_in) a.fill(true);
+
+		// test(0);
+		// Virtual_Round round(3, 4);
+		// round.run(0);
+	}
+
+	array<Hand, PLAYER_COUNT> get_constrained_random_hands() { // get constrained based random assignement of cards
 		/*
 		Alle karten werden geshuffelt. Es wird über sie geloopt. Der erste spieler nimmt die erste karte, die seine bedinungen erüllen, die nachfolgenden spieler wiederholen das. Wenn die liste komplett durchgegangen wurde, wird wieder von vorne angefangen bis alle hände gefüllt sind. dadurch sollte kein bias entstehen das ein bestimmter spieler hauptsächlich die rest karten eines anderes bekommt.
 		Eine naive aufteilung verursacht Bias sobald ein Spieler eine Farbe nicht mehr auf der Hand haben kann (zuvor nicht bedient) -> nachfolgender Spieler nimmt überproportional viele Karten dieser Farbe auf.
 		*/
-		assert(own_hand.m_id != 0);
+
+		int tries_counter = 0;
+
+		greedy_assign:
+
+		tries_counter++;
+		assert(tries_counter < 20 && "No vailid distribution of cards was found for given constrains in get_constrained_random_hands()");
 		
 		auto deck = Deck::shuffeld();
-		array<bool, Deck::MAX_CARD_COUNT> claimed{}; // -> init to false
+		array<bool, Deck::MAX_CARD_COUNT> claimed{}; // -> init whole arr to false
 
 		// mark own hand as claimed
-		for (auto card : own_hand.m_cards_arr) {
+		for (auto card : m_this_hand.m_cards_arr) {
 			for (size_t i = 0; i < Deck::MAX_CARD_COUNT; i++) {
 				if (deck[i] == card) claimed[i] = true;
 			}
@@ -672,50 +701,122 @@ struct Game {
 
 		// mark trump card as claimed
 		for (size_t i = 0; i < Deck::MAX_CARD_COUNT; i++) {
-			if (deck[i] == trump_card) claimed[i] = true;
+			if (deck[i] == m_root_round->m_trump_card) claimed[i] = true;
 		}
 
 		// init hands
 		array<Hand, PLAYER_COUNT> hands;
-		hands[0] = own_hand;
-		card_t trump_color = Card::get_color(trump_card);
-		for (size_t i=1; i<PLAYER_COUNT; i++) {
-			hands[i] = Hand(i, PLAYER_COUNT, trump_color, card_count);
+		hands[m_id] = m_this_hand;
+		card_t trump_color = m_root_round->m_trump_color;
+		for (size_t i=0; i<PLAYER_COUNT; i++) {
+			if (i == m_id) continue;
+			hands[i] = Hand(i, PLAYER_COUNT, trump_color, m_root_round->m_card_count);
 		}
 
-		// get hands
 		auto is_valid = [&hands, this](int id, card_t card) -> bool {
-			return possible_colors_in[id][Card::get_index_from_color(Card::get_color(card))];
+			return Card::is_magic(card) || possible_colors_in[id][Card::get_index_from_color(Card::get_color(card))];
 		};
-
+		
+		// get hands
 		size_t i = 0;
-		for (size_t _ = 0; _ < card_count; _++)
+		for (size_t _ = 0; _ < m_root_round->m_card_count; _++)
 		{
 			// TODO: shuffle players for more uniform spread
-			for (size_t p = 1; p < PLAYER_COUNT; p++)
+			for (size_t p = 0; p < PLAYER_COUNT; p++)
 			{
-				while (!is_valid(p, deck[i])) i++;
+				if (p == m_id) continue;
+				auto last_i = i;
+				while (claimed[i] || !is_valid(p, deck[i])) {
+					i = (i+1) % Deck::MAX_CARD_COUNT;
+					if (i == last_i) {goto greedy_assign;}
+				}
 
 				hands[p].m_cards_arr.push_back(deck[i]);
 				claimed[i] = true;
-				i++;
+				i = (i+1) % Deck::MAX_CARD_COUNT;
 			}
+		}
+
+		return hands;
+	}
+
+	void estimate(const int runs) {
+		int card_count = m_root_round->m_card_count;
+
+		array<int, PLAYER_COUNT> target;
+		target.fill(card_count);
+
+		vector<int> best_card_distribution(card_count, 0);
+
+		array<int, PLAYER_COUNT> mean_trick_ditribution{};
+
+		auto display_bar = [](const string& label, float percentage) {
+			cout << label << ": ";
+			const int width = 30;
+			int filled = static_cast<int>(percentage * width);
+			cout << "\x1b[36m";
+			cout << "[ \x1b[42m";
+			for (int _ = 0; _ < filled; ++_) cout << "—";
+			cout << "\x1b[47m|\x1b[41m";
+			for (int _ = 0; _ < width-filled; ++_) cout << "—";
+			cout << " ] " << "  " << int(percentage * 100) << "%" << flush;
+			cout << "\x1b[0m";
+		};
+
+		auto display_whole_status = [card_count, &display_bar, &best_card_distribution, this](int run_count) {
+			int line_count = 0;
+			auto new_line = [&line_count](const string& line="") {line_count++; cout << line << endl;};
+
+			new_line(to_string(run_count));
+			new_line();
+
+			for (size_t i=0; i<card_count; i++) {
+				display_bar(Card::get_colored_name(m_this_hand.at(i)), best_card_distribution[i] / (float)run_count);
+				new_line();
+			}
+			for (size_t _=0; _<line_count; _++) cout << "\x1b[A";
+			cout << flush;
+		};
+
+		auto& own_hand = m_this_hand.m_cards_arr;
+
+		for (size_t i=0; i<runs; i++) {
+			info("Cycle: ", true);
+			info(to_string((int)i));
+			Virtual_Round r(card_count);
+
+			auto hands = get_constrained_random_hands();
+			
+			// run minimax
+			Branch trick;
+			Branch result = r.minimax_round(trick, r.m_player_hands_arr, target);
+			
+			// find card index
+			card_t best_card = result.history[0][Branch::first_card_index + m_id];
+			auto it = std::find(own_hand.begin(), own_hand.end(), best_card);
+			assert(it != own_hand.end() && "resulted card is not in own hand");
+			size_t index = it - own_hand.begin();
+			best_card_distribution[i]++;
+
+			// visualize
+			display_whole_status(i);
 		}
 	}
 
 	void test(int starting_player) {
 		const int runs = 1000;
-		const int player_count = 3;
 		const int card_count = 4;
 		int call_cout = 0;
-		vector<int> target(player_count, card_count);
+		array<int, PLAYER_COUNT> target;
+		target.fill(card_count);
+
 		auto start = std::chrono::high_resolution_clock::now();
 		for (size_t i=0; i<runs; i++) {
 			std::cout << "\rCycle: " << i << std::flush;
-			Round r(player_count, card_count);
+			Virtual_Round r(card_count);
 			
-			Trick_cycle trick(starting_player, player_count);
-			Trick_cycle result = r.minimax_round(trick, r.m_player_hands_arr, target);
+			Branch trick(starting_player);
+			Branch result = r.minimax_round(trick, r.m_player_hands_arr, target);
 			call_cout+= result.call_count;
 		}
 		std::cout << "\r" << std::flush;
@@ -730,16 +831,10 @@ struct Game {
 		info("average calls per run:");
 		info(to_string(call_cout/runs));
 	}
-
-	Game(int player_count) {
-		test(0);
-		Round round(3, 4);
-		round.run(0);
-	}
 };
 
 int main() {
 	ios::sync_with_stdio(false); // speeds up cout
-	Game g(2);
+
 	return 0;
 }
